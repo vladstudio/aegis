@@ -6,6 +6,11 @@ import MacAppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var picker: PickerPanel<Entry>?
+    /// Owner of the topmost normal window that isn't ours: the app to type into.
+    /// Read before our own prompts steal focus; `frontmostApplication` is stale at launch.
+    private let target = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]])?
+        .first { $0[kCGWindowLayer as String] as? Int == 0 && $0[kCGWindowOwnerPID as String] as? pid_t != getpid() }
+        .flatMap { ($0[kCGWindowOwnerPID as String] as? pid_t).flatMap(NSRunningApplication.init) }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         guard Permissions.isGranted(.accessibility) else {
@@ -20,12 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSAlert(error: error).runModal()
             NSApp.terminate(nil)
         }
-    }
-
-    /// Esc, a pick, or clicking away all hand focus back — that's our cue to quit.
-    func applicationDidResignActive(_ n: Notification) {
-        guard picker != nil else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
     }
 
     private func unlock() throws -> [Entry]? {
@@ -69,8 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         picker.onPick { _, entry in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { TextInjector.inject(entry.code) }
         }
+        // Esc, a pick, or clicking away all take focus from the panel: our cue to quit,
+        // once the injected keystrokes are out.
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: picker, queue: .main) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+        }
         self.picker = picker
-        picker.show(items: entries)
+        picker.show(items: entries, returnTo: target)
     }
 }
 
